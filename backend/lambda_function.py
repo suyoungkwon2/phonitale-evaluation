@@ -1,86 +1,89 @@
 import json
 import boto3
-from datetime import datetime
-from typing import Dict, Any
+import time
+from datetime import datetime, timezone
 
-dynamodb = boto3.resource('dynamodb')
-table = dynamodb.Table('phonitale-user-responses')
-
-def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+def lambda_handler(event, context):
+    # DynamoDB 클라이언트 초기화
+    dynamodb = boto3.resource('dynamodb')
+    table = dynamodb.Table('phonitale-responses')
+    
+    # 현재 시간을 ISO 형식으로 변환
+    current_time = datetime.now(timezone.utc).isoformat()
+    
+    # 요청 데이터 파싱
     try:
-        # Parse the event data
-        user_name = event['user_name']
-        phone_number = event['phone_number']
-        english_word = event['english_word']
-        round_number = event['round_number']
-        page_type = event['page_type']
-        duration = event['duration']
-        response = event.get('response', 'N/A')
+        body = json.loads(event['body'])
+        user = body.get('user', '')
+        words = body.get('words', [])
+        page_type = body.get('page_type', '')
+        round_number = body.get('round_number', 1)
         
-        # Create keys
-        user = f"{user_name}#{phone_number}"
+        # 응답 데이터 구조 생성
+        response_data = {
+            "user": user,
+            "words": []
+        }
         
-        # Get current timestamp
-        current_timestamp = datetime.now().isoformat()
-        
-        # Prepare update expression and attribute values
-        update_expression = []
-        expression_attribute_values = {}
-        
-        # Add round number if it's the first time for this word
-        update_expression.append("round_number = if_not_exists(round_number, :round_number)")
-        expression_attribute_values[":round_number"] = round_number
-        
-        # Add timestamp for the specific page type
-        timestamp_key = f"timestamp-{page_type}"
-        update_expression.append(f"{timestamp_key} = :{timestamp_key}")
-        expression_attribute_values[f":{timestamp_key}"] = current_timestamp
-        
-        # Add duration for the specific page type
-        duration_key = f"duration-{page_type}"
-        update_expression.append(f"{duration_key} = :{duration_key}")
-        expression_attribute_values[f":{duration_key}"] = duration
-        
-        # Add response if it's recognition or generation
-        if page_type in ['recognition', 'generation']:
-            response_key = f"response-{page_type}"
-            update_expression.append(f"{response_key} = :{response_key}")
-            expression_attribute_values[f":{response_key}"] = response
-        
-        # Add survey response if it's survey
-        if page_type == 'survey':
-            update_expression.append("survey = :survey")
-            expression_attribute_values[":survey"] = response
-        
-        # Update or create item in DynamoDB
-        table.update_item(
-            Key={
-                'user': user,
-                'english_word': english_word
-            },
-            UpdateExpression="SET " + ", ".join(update_expression),
-            ExpressionAttributeValues=expression_attribute_values
-        )
+        # 각 단어에 대한 응답 처리
+        for word_data in words:
+            english_word = word_data.get('english_word', '')
+            duration = word_data.get('duration', 0)
+            response = word_data.get('response', {})
+            
+            # 단어별 응답 데이터 생성
+            word_response = {
+                "english_word": english_word,
+                "Attributes": {
+                    "round_number": round_number,
+                    "timestamp-start": current_time,
+                    "timestamp-learning": current_time if page_type == "learning" else "",
+                    "timestamp-recognition": current_time if page_type == "recognition" else "",
+                    "timestamp-generation": current_time if page_type == "generation" else "",
+                    "timestamp-survey": current_time if page_type == "survey" else "",
+                    "timestamp-end": current_time if page_type == "survey" else "",
+                    "duration-learning": duration if page_type == "learning" else 0,
+                    "duration-recognition": duration if page_type == "recognition" else 0,
+                    "duration-generation": duration if page_type == "generation" else 0,
+                    "duration-all": duration * 3 if page_type == "survey" else 0,
+                    "response-recognition": response.get('recognition', ''),
+                    "response-generation": response.get('generation', ''),
+                    "survey": response.get('survey', 0)
+                }
+            }
+            
+            response_data["words"].append(word_response)
+            
+            # DynamoDB에 데이터 저장
+            table.put_item(
+                Item={
+                    'user': user,
+                    'timestamp': current_time,
+                    'word': english_word,
+                    'round_number': round_number,
+                    'page_type': page_type,
+                    'duration': duration,
+                    'response_recognition': response.get('recognition', ''),
+                    'response_generation': response.get('generation', ''),
+                    'survey': response.get('survey', 0)
+                }
+            )
         
         return {
             'statusCode': 200,
-            'body': json.dumps({
-                'message': 'Response recorded successfully',
-                'user_name': user_name,
-                'phone_number': phone_number,
-                'english_word': english_word,
-                'round_number': round_number,
-                'page_type': page_type,
-                'timestamp': current_timestamp,
-                'duration': duration,
-                'response': response
-            })
+            'body': json.dumps(response_data, ensure_ascii=False),
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            }
         }
         
     except Exception as e:
         return {
             'statusCode': 500,
-            'body': json.dumps({
-                'error': str(e)
-            })
+            'body': json.dumps({'error': str(e)}),
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            }
         } 
