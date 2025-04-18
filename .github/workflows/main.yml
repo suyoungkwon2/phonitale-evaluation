@@ -54,6 +54,11 @@ jobs:
         cd backend
         pip install -r requirements.txt
         
+    - name: Run tests
+      run: |
+        cd backend
+        python -m unittest tests/test_lambda.py
+        
     - name: Create deployment package
       run: |
         cd backend
